@@ -1,0 +1,249 @@
+% -*- mode: noweb; noweb-default-code-mode: R-mode; -*-
+\documentclass[a4paper]{article}
+\SweaveOpts{echo=FALSE, prefix = F}
+\usepackage{a4wide}
+\usepackage{subfigure}
+\renewcommand{\familydefault}{\sfdefault}
+% \usepackage{fancyhdr}
+% \pagestyle{fancy}
+
+
+
+\title{PIL Response Score for A/B at Price 0.56}
+\author{Lily Wang}
+
+
+
+
+<<>>=
+####################################################################################################
+
+setwd('d:/temp/sweave-test')
+dev.sample <- read.csv('ab_P56_reach_R.csv')
+dev.sample$response <- 2 - dev.sample$response
+
+all.dummy = T
+glm.formula <- as.formula(response ~ TOT_INT_FEE_mth6_d2 + no_ln_matured_d2)
+
+base.score <- 500
+base.odds <- 0.02
+pts.to.double <- 20
+score.brks <- c(-Inf, seq(500, 600, by = 15), Inf)
+
+####################################################################################################
+
+require(ggplot2)
+require(xtable)
+options(digits = 4)
+
+# dev.sample$response[is.na(dev.sample$response)] <- 0
+mod <- glm(glm.formula, offset = lnodds_middle, data = dev.sample, family = binomial)
+
+mod.result <- data.frame(response = dev.sample$response, pred.logodds = mod$linear.predictors, 
+	pred.prob = mod$fitted.values, score = round((mod$linear.predictors - log(base.odds)) / log(2) * pts.to.double + base.score))
+ks <- ks.test(mod.result$score[mod.result$response == 1], mod.result$score[mod.result$response == 0])
+	
+# score <- df$PROB_middle
+# logodds <- df$lnodds_middle
+# pred.prob <- df$PROB_middle
+
+# Characteristics table
+if (all.dummy) {
+	c.table <- data.frame(coeff = coefficients(mod), score = coefficients(mod) / log(2) * pts.to.double)
+	#c.table[1,2] <- c.table[1,2] + base.score - log(base.odds)/log(2)*pts.to.double
+	c.table$total.pct <- c(1, mean(dev.sample[names(coefficients(mod))[-1]])) * 100
+	c.table$'Resp = 1' <- c(sum(dev.sample$response), colSums(dev.sample[names(coefficients(mod))[-1]] * dev.sample$response))
+	c.table$'Resp = 0' <- c(sum(1 - dev.sample$response), colSums(dev.sample[names(coefficients(mod))[-1]] * (1 - dev.sample$response)))
+	c.table$odds = c.table$'Resp = 1' / c.table$'Resp = 0'
+	c.table$desc <- rep('say sth \n about your variable', 3)
+}
+
+
+# Score distribution
+
+score.dist.by.y <- ggplot(mod.result, aes(x = score, colour = factor(response))) + geom_density(size = 1.2) 
+score.dist.by.y <- score.dist.by.y + labs(x = 'Score', colour = 'Response') + opts(title = 'Score Distribution', legend.position = c(0.9, 0.9))
+
+# KS table and plot by score decile
+
+sort.df <- mod.result[order(mod.result$score),]
+score.decile <- 1:dim(sort.df)[1] %/% ceiling(dim(sort.df)[1] / 10)
+
+decile.min <- tapply(sort.df$score, score.decile, min)
+decile.max <- tapply(sort.df$score, score.decile, max)
+decile.label <- paste(decile.min, '-', decile.max, sep = ' ')
+score.decile <- factor(score.decile, labels = decile.label)
+
+
+score.table.decile <- table(score.decile, sort.df$response, useNA='ifany')
+score.table.decile <- cbind(score.table.decile, rowSums(score.table.decile))
+colnames(score.table.decile)[1:3] <- c('Y=0', 'Y=1', 'Total')
+score.table.decile <- cbind(score.table.decile, prop.table(score.table.decile, 2), score.table.decile[,2]/score.table.decile[,3])
+score.table.decile <- cbind(score.table.decile, tapply(sort.df$pred.prob, score.decile, mean))
+colnames(score.table.decile)[4:8] <- c('%(Y=0)', '%(Y=1)', '%Total', 'Act.RR', 'Exp.RR')
+
+
+tmp.df.decile <- as.data.frame(cbind(apply(score.table.decile[,4:5], 2, cumsum), score.table.decile[,6:8]))
+tmp.df.decile$row <- factor(rownames(tmp.df.decile))
+
+score.odds.by.decile <- ggplot(tmp.df.decile, aes(row)) + geom_point(aes(y = log(tmp.df.decile[,5] / (1 - tmp.df.decile[,5]))), colour = 'red', size = 2) 
+score.odds.by.decile <- score.odds.by.decile + geom_line(aes(y = log(tmp.df.decile[,4] / (1- tmp.df.decile[,4])), group = 1), colour = 'green', size = 1)
+score.odds.by.decile <- score.odds.by.decile + labs(x = '', y = 'LogOdds')
+score.odds.by.decile <- score.odds.by.decile + opts(title = 'Score Odds by Decile', axis.text.x = theme_text(angle = 45))
+
+ks.by.decile <- ggplot(tmp.df.decile, aes(row, tmp.df.decile[,3])) + geom_bar(stat = 'identity')
+tmp.df1.decile <- melt(tmp.df.decile[,-(3:5)], 'row')
+ks.by.decile <- ks.by.decile + geom_line(data = tmp.df1.decile, aes(row, value, group = variable, colour = variable), size = 1.2)
+ks.by.decile <- ks.by.decile + labs(x = '', colour = 'Resp') + opts(title = 'KS by Score Decile', axis.text.x = theme_text(angle = 45), legend.position = c(0.2, 0.9)) + 
+	scale_y_continuous("", formatter = 'percent')
+
+	
+# KS table and plot by score band
+
+score.cut <- cut(mod.result$score, breaks = score.brks, include.lowest=T)
+score.table <- table(score.cut, mod.result$response, useNA='ifany')
+score.table <- cbind(score.table, rowSums(score.table))
+colnames(score.table)[1:3] <- c('Y=0', 'Y=1', 'Total')
+score.table <- cbind(score.table, prop.table(score.table, 2), score.table[,2]/score.table[,3])
+score.table <- cbind(score.table, tapply(mod.result$pred.prob, score.cut, mean))
+colnames(score.table)[4:8] <- c('%(Y=0)', '%(Y=1)', '%Total', 'Act.RR', 'Exp.RR')
+
+tmp.df <- as.data.frame(cbind(apply(score.table[,4:5], 2, cumsum), score.table[,6:8]))
+tmp.df$row <- factor(rownames(tmp.df), levels = levels(score.cut))
+
+score.odds.by.band <- ggplot(tmp.df, aes(row)) + geom_point(aes(y = log(tmp.df[,5] / (1 - tmp.df[,5]))), colour = 'red', size = 2) 
+score.odds.by.band <- score.odds.by.band + geom_line(aes(y = log(tmp.df[,4] / (1- tmp.df[,4])), group = 1), colour = 'green', size = 1)
+score.odds.by.band <- score.odds.by.band + labs(x = '', y = 'LogOdds') + 
+	opts(title = 'Score Odds by Band', axis.text.x = theme_text(angle = 45))
+
+
+ks.by.band <- ggplot(tmp.df, aes(row, tmp.df[,3])) + geom_bar(stat = 'identity')
+tmp.df1 <- melt(tmp.df[,-(3:5)], 'row')
+ks.by.band <- ks.by.band + geom_line(data = tmp.df1, aes(row, value, group = variable, colour = variable), size = 1.2)
+ks.by.band <- ks.by.band + labs(x = '', colour = 'Resp') + opts(title = 'KS by Score Band', axis.text.x = theme_text(angle = 45), legend.position = c(0.2, 0.9)) + 
+	scale_y_continuous("", formatter = 'percent')
+@
+
+
+
+\begin{document}
+\maketitle
+\setkeys{Gin}{width=0.5\textwidth}
+
+
+\section{Introduction}
+
+The overall response rate is \Sexpr{round(100*mean(dev.sample$response), 2)}\%, 
+and there are in total \Sexpr{dim(dev.sample)[1]} records, out of which \Sexpr{sum(dev.sample$response)} 
+records with response = 1, and \Sexpr{dim(dev.sample)[1] - sum(dev.sample$response)} records with response = 0. 
+
+
+\section{Model Description}
+\subsection{Logistical Regression Output}
+<<results = tex>>=
+# summary(mod)
+print(xtable(mod))
+@
+
+\subsection{Characteristic Table}
+<<results = tex>>=
+c.table.x <- xtable(c.table)
+digits(c.table.x)[5:6] <- 0
+print(c.table.x)
+@
+
+\section{Score Performance}
+KS:  \Sexpr{round(100*ks$statistic, 2)}\% \\
+Socre distribution:
+\begin{center}
+<<results = tex>>=
+overall <- summary(mod.result$score)
+a <- tapply(mod.result$score, mod.result$response, summary)
+b <- rbind(overall, 'Resp = 0' = unlist(a[1]), 'Resp = 1' = unlist(a[2]))
+b.x <- xtable(b)
+digits(b.x)[2:7] <- 0
+print(b.x)
+@
+\end{center}
+
+<<score-by-y, fig=TRUE, include = F>>=
+print(score.dist.by.y)
+@
+
+\begin{figure}[!ht]
+\centering
+\includegraphics{score-by-y}
+\caption{Score Distribution by Response}
+\end{figure}
+
+
+\subsection{KS table and plot by score band}  
+% \begin{center}
+% <<>>=
+% print(score.table[,1:7])
+% @
+% \end{center}
+<<results = tex>>=
+score.table.x <- xtable(cbind(score.table[,1:3], score.table[,4:6]*100, 'Act.RR' = score.table[,7]), caption = 'KS Table by Score Band')
+digits(score.table.x)[2:4] <- 0
+print(score.table.x)
+@
+
+<<ks-by-band, fig=TRUE, include = F>>=
+print(ks.by.band)
+@
+
+<<score-odds-by-band, fig=TRUE, include = F>>=
+print(score.odds.by.band)
+@
+
+\begin{figure}
+\centering
+\mbox{
+\subfigure[KS Plot]{\includegraphics{ks-by-band}}
+\quad
+\subfigure[LogOdds Plot]{\includegraphics{score-odds-by-band}}
+}
+\caption{Score Band Plots}
+
+\end{figure}
+
+
+
+\subsection{KS table and plot by score decile} 
+% \begin{center}
+%<<>>=
+% print(score.table.decile[, 1:7])
+% @
+% \end{center}
+<<results = tex>>=
+score.table.decile.x <- xtable(cbind(score.table.decile[,1:3], score.table.decile[,4:6]*100, 'Act.RR' = score.table.decile[,7]), caption = 'KS Table by Score Decile')
+digits(score.table.decile.x)[2:4] <- 0
+print(score.table.decile.x)
+@
+
+
+
+<<ks-by-decile, fig=TRUE, include = F>>=
+print(ks.by.decile)
+@
+<<score-odds-by-decile, fig=TRUE, include = F>>=
+print(score.odds.by.decile)
+@
+
+\begin{figure}
+\centering
+\mbox{
+\subfigure[KS Plot]{\includegraphics{ks-by-decile}}
+\quad
+\subfigure[LogOdds Plot]{\includegraphics{score-odds-by-decile}}
+}
+\caption{Score Decile Plots}
+
+\end{figure}
+
+
+
+\end{document}
+
+
